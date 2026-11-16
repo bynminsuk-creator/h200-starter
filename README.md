@@ -1,102 +1,318 @@
-# H200 Starter
+# TriModalDet
 
-사업단 H200 서버의 GitHub 이슈 실행 방식에 맞춘 기본 프로젝트입니다.
-실제 연구 모델 학습 코드는 아직 포함하지 않습니다. 첫 요청은 작은 GPU 테스트부터 실행합니다.
+Tri-modal object detection using RGB, thermal, and event camera data.
 
-## 첫 실행 요청
+> Based on [radlab-sketch/trimodal-uav-det](https://github.com/radlab-sketch/trimodal-uav-det) (MIT License),
+> with added runtime settings for NVIDIA H200 and a log watchdog.
 
-사업단에서 승인된 사용 기간 안에 `Aerodrone-H200/gpu-request`의
-**컨테이너 생성 및 코드 실행 요청** 양식을 엽니다.
+<p align="center">
+  <img src="dataset.png" alt="Tri-modal UAV dataset examples" width="900"/>
+</p>
 
-| 항목 | 입력값 |
-| --- | --- |
-| 사용자 ID | `bynminsuk-creator` |
-| 코드 GitHub 링크 | `https://github.com/bynminsuk-creator/h200-starter.git` |
-| 코드 실행 명령어 | `bash run.sh smoke` |
-| 이미지 | `pytorch/pytorch:latest` (실제 제공 이미지 확인) |
-| 언어 | Bash (선택지에 Bash가 없으면 담당자에게 확인) |
-| GPU 할당량 | 소속 그룹에서 허용하는 범위의 `1` |
+## Dataset Link
+https://drive.google.com/drive/folders/1U2NJQMRz8uP8e-z9lCguRWVPWpXs4MmB
 
-`latest`의 Python/PyTorch/CUDA 버전은 고정하지 않습니다. 실제 버전은 실행 로그와 결과에 기록합니다.
-등록과 GitHub 조직 초대 수락을 먼저 완료해야 합니다. 제출한 요청은 자동 실행될 수 있습니다.
+## Dataset Notes
 
-테스트는 CUDA 접근, 작은 행렬곱, 역전파와 유한한 결과를 확인합니다.
-GPU가 없으면 실패를 반환하므로 서버 설정 문제를 CPU 실행으로 숨기지 않습니다.
-실제 데이터셋이나 모델 파일을 내려받지 않으며 새 패키지도 설치하지 않습니다.
+- The annotation files contain **30,634** vehicle boxes in 9,751 label files (9,750 non-empty). The paper reports 24,223, which equals their total line count: the 6,411 non-empty `nframe_*.txt` files have no trailing newline, so a line count misses one box in each.
 
-## 결과 받기
+## Overview
 
-종료 댓글에서 `[summary]`와 `[result]`를 확인합니다.
-관리자에게 **이슈 번호 + 로그에 표시된 `/app/output/h200-starter/<실행ID>/results.zip` 경로**를 전달합니다.
+TriModalDet is a tri-modal object detection framework that processes RGB, thermal, and event camera inputs through MAGE+BiTE fusion mechanisms. The architecture combines hierarchical feature extraction with modality-aware gating to improve detection performance across varying environmental conditions.
 
-- `summary.json`: 성공/실패, 종료 코드, 실행 시간
-- `smoke.json`: 성공한 GPU 테스트의 환경 및 측정값
-- `run.log`: 전체 실행 로그 (최대 8 MiB)
-- `results.zip`: 위 결과 파일 묶음 (원본 파일 합계 100 MiB 이하일 때 생성)
+## Architecture
 
-화면 출력은 약 12,000바이트로 제한해 이슈 댓글이 너무 길어지는 것을 줄였습니다.
-결과가 큰 학습 작업은 관리자에게 개별 파일을 요청할 수 있습니다.
-서버 안내의 output 100 GB 제한과 이 프로젝트의 ZIP 생성 제한 100 MiB는 서로 다릅니다.
+The framework consists of three main components:
 
-## 프로젝트 코드 추가 후 실행
+**Inter-Modal Backbone**
+- Hierarchical inter-sensor backbone based on SegFormer MiT (Mix Transformer)
+- Dual-stream architecture with separate pathways for RGB and auxiliary modalities (thermal, event)
+- Configurable backbone variants (mit_b0 through mit_b4) for different speed/accuracy trade-offs
+- Multi-scale feature extraction through 4 transformer stages
 
-코드와 필요한 작은 설정 파일을 이 저장소에 추가한 뒤 다음 형태로 요청합니다.
+**Tri-Modal Fusion**
+- Modality-Aware Gated Exchange (MAGE) for adaptive modality weighting with channel and spatial gating
+- Bidirectional Token Exchange (BiTE) with inter-modal attention mechanisms
+- Stage-wise fusion enabling cross-modality information exchange at multiple scales
 
+**Detection Head**
+- Feature Pyramid Network (FPN) for multi-scale feature aggregation
+- Region Proposal Network (RPN) for object proposals
+- Faster R-CNN detection head for classification and localization
+
+## Installation
+
+Requirements:
+- Python 3.7 or higher
+- PyTorch 1.7.0 or higher
+- CUDA 10.2 or higher (for GPU training)
+
+Setup:
 ```bash
-bash run.sh run python -u train.py
+cd trimodaldet
+pip install -r requirements.txt
 ```
 
-`run` 모드는 임의 명령을 감시합니다. 모델 의존성 설치와 데이터 준비 코드는 프로젝트에 맞춰 추가해야 합니다.
-필요한 결과 경로는 자식 프로세스의 `RUN_OUTPUT_DIR` 환경변수로 전달합니다.
+## Data Format
+
+### Input Images
+
+Images must be 5-channel NumPy arrays saved as .npy files with shape (H, W, 5):
+- Channels 0-2: RGB
+- Channel 3: Thermal or infrared
+- Channel 4: Event camera data
+
+Example:
+```python
+import numpy as np
+
+image = np.zeros((480, 640, 5), dtype=np.uint8)
+image[:, :, 0:3] = rgb_data
+image[:, :, 3] = thermal_data
+image[:, :, 4] = event_data
+
+np.save('data/images/frame_001.npy', image)
+```
+
+### Annotations
+
+Labels use YOLO format (one line per object):
+```
+class_id x_center y_center width height
+```
+
+All coordinates are normalized to [0, 1].
+
+Example (data/labels/frame_001.txt):
+```
+0 0.5 0.5 0.3 0.4
+1 0.2 0.7 0.15 0.2
+```
+
+### Directory Structure
+
+Users must create the following directories before training:
+```
+data/
+├── images/    (place .npy files here)
+└── labels/    (place .txt files here)
+```
+
+## Usage
+
+### Training
+
+```bash
+python scripts/train.py --data data/ --epochs 15 --batch-size 2
+```
+
+Optional arguments:
+- `--backbone`: Backbone variant (default: mit_b1)
+  - `mit_b0`: Smallest, fastest (~3.7M parameters)
+  - `mit_b1`: Balanced, default (~13.5M parameters)
+  - `mit_b2`: Base model (~24.7M parameters)
+  - `mit_b3`: Medium-large (~44M parameters)
+  - `mit_b4`: Largest, best accuracy (~61.4M parameters)
+- `--epochs`: Number of training epochs (default: 15)
+- `--batch-size`: Batch size (default: 2)
+- `--lr`: Learning rate (default: 0.005)
+- `--model`: Path to save model checkpoint (default: trimodaldet.pth)
+
+### Backbone Selection
+
+You can select different encoder backbones to balance speed vs. accuracy:
+
+```bash
+# Fastest training/inference (recommended for prototyping)
+python scripts/train.py --data data/ --epochs 15 --backbone mit_b0
+
+# Default balanced configuration
+python scripts/train.py --data data/ --epochs 15 --backbone mit_b1
+
+# Higher accuracy for production
+python scripts/train.py --data data/ --epochs 15 --backbone mit_b4
+```
+
+**Backbone Comparison:**
+
+| Variant | Parameters | Depths | Embed Dims | Use Case |
+|---------|-----------|---------|------------|----------|
+| mit_b0 | ~3.7M | [2,2,2,2] | [32,64,160,256] | Fast prototyping, edge devices |
+| mit_b1 | ~13.5M | [2,2,2,2] | [64,128,320,512] | Default, balanced |
+| mit_b2 | ~24.7M | [3,4,6,3] | [64,128,320,512] | Higher accuracy |
+| mit_b3 | ~44M | [3,4,18,3] | [64,128,320,512] | Medium-large model |
+| mit_b4 | ~61.4M | [3,8,27,3] | [64,128,320,512] | Maximum accuracy |
+
+### Running on an NVIDIA H200
+
+On the GPU server, with the dataset in `data/`:
+
+```bash
+pip install -r requirements.txt
+bash scripts/run_h200.sh
+```
+
+The script trains, then evaluates, and writes everything to `logs/<run>.log` and
+`checkpoints/<run>.pth`. Settings are environment variables (see the header of
+`scripts/run_h200.sh`), e.g. `DATA=/path/to/data BATCH_SIZE=32 LR=0.04 bash scripts/run_h200.sh`.
+
+All entry scripts enable TF32 and cuDNN autotuning on CUDA. `scripts/train.py`
+saves its checkpoint after every epoch, and together with `scripts/test.py` it
+accepts `--workers N` (DataLoader processes, default 8).
+
+### Log watchdog
+
+Every training and evaluation script kills its own process when no log line has
+been printed for 40 minutes (a hung run), printing where each thread was stuck
+and exiting with code 124. Change the limit with `--watchdog-minutes N`
+(`train.py` / `test.py`) or the environment variable `TRIMODAL_WATCHDOG_MINUTES=N`
+(all scripts); `0` disables it. If the Python interpreter itself is frozen, a
+backstop ends the process one minute later with exit code 1; that backstop is
+dependable on Linux but not on Windows.
+
+### Evaluation
+
+**Single Model Evaluation:**
+
+```bash
+python scripts/test.py --data data/ --model trimodaldet.pth
+```
+
+Results are saved to the test_results/ directory with visualizations of ground truth and predicted bounding boxes.
+
+### Visualization
+
+```bash
+python scripts/visualize.py --vis 0
+```
+
+Visualizes the sample at index 0 from the dataset.
+
+## Ablation Studies
+
+The repository includes comprehensive ablation study implementations to analyze the contribution of different components:
+
+### Fusion Mechanism Ablations
+
+**CSSA (Channel Switching and Spatial Attention):**
+```bash
+python trimodaldet/ablations/scripts/train_cssa.py \
+    --data data/ \
+    --epochs 15 \
+    --backbone mit_b1 \
+    --cssa-thresh 0.5
+```
+
+**GAFF (Guided Attentive Feature Fusion):**
+```bash
+python trimodaldet/ablations/scripts/train_gaff_ablation.py \
+    --data data/ \
+    --epochs 15 \
+    --backbone mit_b1 \
+    --gaff-stages "1,2,3,4" \
+    --gaff-se-reduction 4
+```
+
+### Modality Ablations
+
+Test the contribution of individual modalities by training with different modality combinations:
+
+```bash
+# RGB + Thermal
+python trimodaldet/ablations/scripts/train_modality_ablation.py \
+    --data data/ \
+    --modalities rgb thermal
+
+# All modalities (RGB + Thermal + Event)
+python trimodaldet/ablations/scripts/train_modality_ablation.py \
+    --data data/ \
+    --modalities rgb thermal event
+```
+
+## Configuration
+
+The Config class in trimodaldet/config.py contains all hyperparameters:
 
 ```python
-import os
-from pathlib import Path
-result_dir = Path(os.environ["RUN_OUTPUT_DIR"])
-# 결과 지표, 로그, 수령할 모델 등을 result_dir 아래에 저장
+num_epochs = 15              # Training epochs
+batch_size = 2               # Batch size
+learning_rate = 0.005        # Learning rate
+fpn_out_channels = 256       # FPN output channels
 ```
 
-로그가 40분 동안 없으면 종료 코드 124로 중단합니다. 총 실행 시간 기본값은 1시간입니다.
-이것은 이 프로젝트의 보호 설정이며 서버 운영 정책의 최대 실행 시간이 아닙니다.
-긴 학습은 명시적으로 시간을 조정하고, 진행 로그를 출력합니다.
+Modify these parameters based on your hardware and dataset requirements.
 
-```bash
-WATCHDOG_SECONDS=2400 MAX_SECONDS=21600 bash run.sh run python -u train.py
+## Technical Details
+
+### Inter-Modal Fusion
+
+The Bidirectional Token Exchange (BiTE) combines features from RGB and auxiliary modality streams using inter-modal attention. Query vectors from one modality attend to key-value pairs from the other modality, enabling bidirectional information flow between modalities.
+
+The Modality-Aware Gated Exchange (MAGE) adaptively weights contributions from each modality using both channel and spatial attention mechanisms. This improves robustness when one modality contains noise or missing data by dynamically adjusting feature rectification weights.
+
+### Training
+
+- Optimizer: SGD with momentum
+- Loss: Combined classification and bounding box regression from Faster R-CNN
+- Data split: Automatic 80/20 train/test split
+- Device: Automatic GPU detection with CPU fallback
+
+## Project Structure
+
+```
+trimodaldet/
+├── trimodaldet/             # Main package
+│   ├── models/              # Model architecture
+│   │   ├── encoder.py       # InterModalBackbone and variants (mit_b0-b4)
+│   │   ├── backbone.py      # InterModalBackbone with FPN wrapper
+│   │   ├── fusion.py        # MAGE and BiTE fusion modules
+│   │   └── transformer.py   # Transformer building blocks
+│   ├── ablations/           # Ablation study implementations
+│   │   ├── encoder_cssa.py          # CSSA fusion variants
+│   │   ├── encoder_gaff_flexible.py # GAFF fusion variants
+│   │   ├── backbone_modality.py     # Modality ablation backbone
+│   │   ├── fusion/                  # Fusion module implementations
+│   │   └── scripts/                 # Ablation training scripts
+│   ├── data/                # Dataset and transforms
+│   │   ├── dataset.py       # NpyYoloDataset for 5-channel inputs
+│   │   └── transforms.py    # Data augmentation
+│   ├── training/            # Training and evaluation
+│   │   ├── trainer.py       # Training loop
+│   │   └── evaluator.py     # Evaluation metrics
+│   ├── utils/               # Utilities and visualization
+│   │   ├── metrics.py       # mAP and detection metrics
+│   │   └── visualization.py # Bounding box visualization
+│   └── config.py            # Configuration and hyperparameters
+├── scripts/                 # Entry point scripts
+│   ├── train.py             # Main training script
+│   ├── test.py              # Evaluation script
+│   └── visualize.py         # Dataset visualization
+├── data/                    # Data directory (user-created)
+│   ├── images/              # .npy files (5-channel images)
+│   └── labels/              # .txt files (YOLO format)
+├── checkpoints/             # Model checkpoints (created during training)
+├── requirements.txt
+└── README.md
 ```
 
-Linux에서는 제한 초과 시 자식 프로세스 그룹을 종료합니다.
-Windows 로컬 테스트에서는 직접 실행한 프로세스만 종료하므로 하위 프로세스 정리는 Linux에서 확인해야 합니다.
-학습 중 체크포인트를 주기적으로 저장하고, 무응답 종료 시 저장되지 않은 진행 상황은 유실될 수 있습니다.
+### Key Modules
 
-## 데이터와 경로
+**InterModalBackbone (`models/encoder.py`):**
+- Implements the hierarchical inter-sensor backbone architecture
+- Variants: `mit_b0`, `mit_b1`, `mit_b2`, `mit_b3`, `mit_b4`
+- Each variant has different depths and embedding dimensions for speed/accuracy trade-offs
+- Dual-stream processing with MAGE+BiTE fusion at each stage
 
-| 경로 | 용도 |
-| --- | --- |
-| `/app/data` | 관리자가 제공한 데이터·가중치, 읽기 전용 |
-| `/app/scratch/h200-starter` | 캐시·임시 파일·압축 해제 작업 공간 |
-| `/app/output/h200-starter/<실행ID>` | 수령할 결과 |
+**Fusion Modules (`models/fusion.py`):**
+- `MAGE` (ModalityAwareGatedExchange): Channel and spatial gating for adaptive modality weighting
+- `BiTE` (BidirectionalTokenExchange): Inter-modal attention for bidirectional feature fusion
+- `InterModalAttention`: Core attention mechanism for cross-modality interaction
 
-작업별 컨테이너는 종료 후 삭제되며 다음 작업에 파일이 자동으로 이어지지 않습니다.
-큰 데이터는 공개 배포본에서 작업 중 받거나 관리자에게 ZIP과 SHA-256을 전달합니다.
-GitHub에 데이터·가중치·토큰·실험 결과를 올리지 않습니다.
-비공개 저장소를 사용하려면 서버가 복제할 수 있도록 담당자와 접근 권한을 별도로 확인해야 합니다.
+**Backbone Wrapper (`models/backbone.py`):**
+- `InterModalBackbone`: Wraps the encoder with Feature Pyramid Network (FPN)
+- Provides multi-scale features for detection head
+- Compatible with torchvision's Faster R-CNN detector
 
-## 로컬에서 실행기 확인
+## License
 
-Python 표준 라이브러리만으로 실행기의 결과 저장을 확인할 수 있습니다.
-
-```bash
-OUTPUT_ROOT=./output python scripts/runner.py -- python -c "print('runner OK')"
-```
-
-GPU 테스트에는 PyTorch가 필요합니다. CPU 테스트를 원하면 `bash run.sh smoke --allow-cpu`를 사용합니다.
-서버 요청에서는 기본 `bash run.sh smoke`를 사용합니다.
-
-## 참고 자료
-
-- 제공받은 `H200 사용 등록.pptx`, `H200 사용법 _이슈작성.pptx`, `H200_사용설명서.pdf`를 바탕으로 요청 흐름을 정리했습니다.
-- [conantong1110/trimodal-uav-det-h200](https://github.com/conantong1110/trimodal-uav-det-h200)의 실행 스크립트와 로그 감시 방식을 참고했습니다.
-  이 프로젝트의 코드는 독립적으로 작성했습니다. 해당 저장소의 모델이나 데이터 로더를 복사하지 않았습니다.
-- PDF에는 `KAU-H200`이라는 조직명이 있고 PPT에는 `Aerodrone-H200/gpu-request`가 나옵니다.
-  실제 초대받은 조직과 현재 사업단 안내를 우선 확인하세요.
-- 결과 전달도 PDF의 다운로드 링크 설명과 PPT의 관리자 요청 설명이 다르므로, 관리자 요청 경로를 준비하고 실제 댓글 안내를 따릅니다.
+MIT License
